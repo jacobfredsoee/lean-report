@@ -1,0 +1,14 @@
+{
+    "include": [
+        "*.py"
+    ],
+    "exclude": [
+        ".venv",
+    ],
+    "pythonVersion": "3.13",
+    "typeCheckingMode": "basic",
+    "useLibraryCodeForTypes": true,
+    "reportMissingImports": true,
+    "reportMissingTypeStubs": false,
+    "reportUnusedCallResult": false
+}
