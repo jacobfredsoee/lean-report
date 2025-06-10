@@ -21,6 +21,20 @@ curl https://mise.jdx.dev/install.sh | bash
 # Then restart your shell or follow the printed instructions
 ```
 
+**After installing mise:**
+
+- Trust the project (so mise will load environment variables and tools):
+
+```sh
+mise trust .
+```
+
+- Activate mise shell integration (so env vars and tools are loaded automatically):
+
+```sh
+mise activate
+```
+
 ---
 
 ## 2. Install uv
@@ -51,9 +65,6 @@ S3_ENDPOINT_URL = "https://your-objectstorage-endpoint.com"
 S3_REGION = "your-region"
 ```
 
-- **Never commit secrets to git!**
-- These environment variables will be automatically loaded if you have mise shell integration enabled.
-
 ---
 
 ## 4. Install Python and dependencies
@@ -62,13 +73,7 @@ If you have a `pyproject.toml` or `requirements.txt`, run:
 
 ```sh
 uv venv
-uv pip install -r requirements.txt
-```
-
-Or, if using `pyproject.toml`:
-
-```sh
-uv pip install .
+uv sync
 ```
 
 ---
@@ -82,28 +87,3 @@ streamlit run src/app.py
 ```
 
 ---
-
-## Troubleshooting
-
-- Make sure you have enabled mise shell integration (`mise activate` or follow [mise shell setup](https://mise.jdx.dev/docs/shell/)).
-- Check your environment variables:
-  ```sh
-  echo $S3_ACCESS_KEY_ID
-  ```
-- If you have issues with S3, double-check your credentials and endpoint.
-
----
-
-## Project structure
-
-- `src/app.py` — Main Streamlit app
-- `src/s3_utils.py` — S3 utility functions
-- `src/utils.py` — Local file utilities
-- `.mise.local.toml` — Your local (uncommitted) secrets and environment variables
-- `.gitignore` — Ignores `.mise.local.toml`, `.env`, and other sensitive files
-
----
-
-## License
-
-MIT 
