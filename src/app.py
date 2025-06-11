@@ -20,6 +20,10 @@ from plot_utils import (
 )
 from utils import find_backtest_files, parse_log_file
 import json
+import pandas as pd
+import numpy as np
+import plotly.graph_objects as go
+
 
 # Set up logging
 logging.basicConfig(level=logging.INFO)
@@ -101,7 +105,8 @@ if "report_path" not in st.session_state:
 
 # Sidebar for folder selection
 st.sidebar.title("Backtest Selection")
-default_path = "s3://algo-trading/output/optimizations"  # S3 bucket path
+# default_path = "s3://algo-trading/output/optimizations"  # S3 bucket path
+default_path = "/Users/jacobfredsoe/Downloads/optimizations"  # local path
 browse_path = st.sidebar.text_input(
     "Enter backtest output folder path:",
     value=st.session_state["browse_path"] or default_path,
@@ -111,7 +116,7 @@ st.session_state["browse_path"] = browse_path
 
 # List all immediate subfolders of browse_path
 if browse_path and (is_s3_path(browse_path) or os.path.exists(browse_path)):
-    subdirs = get_subdirectories(browse_path)
+    subdirs = sorted(get_subdirectories(browse_path))
     if subdirs:
         st.sidebar.markdown("---")
         st.sidebar.subheader("Folders in this path")
@@ -139,7 +144,12 @@ else:
 
 # Determine which path to show the report for
 report_path = st.session_state.get("report_path") or browse_path
-if report_path and (is_s3_path(report_path) or os.path.exists(report_path)):
+subdirs = get_subdirectories(report_path)
+if (
+    report_path
+    and (is_s3_path(report_path) or os.path.exists(report_path))
+    and len(subdirs) == 0
+):
     files = get_files(report_path)
     has_json = bool(files["main"] or files.get("summary"))
     if has_json:
@@ -254,6 +264,150 @@ if report_path and (is_s3_path(report_path) or os.path.exists(report_path)):
     else:
         st.warning("No backtest report (JSON) found in this folder.")
 else:
-    st.sidebar.warning(
-        "Please enter a valid folder path. You can use ~/ to start from your home directory or s3://bucket/path for S3."
-    )
+    summary_files = []
+    for dir in subdirs:
+        if is_s3_path(report_path):
+            bucket, prefix = parse_s3_path(report_path)
+            if prefix:
+                s3_path = f"s3://{bucket}/{prefix}/{dir}"
+            else:
+                s3_path = f"s3://{bucket}/{dir}"
+            try:
+                files = find_backtest_files_s3(s3_path)
+                if files.get("summary"):
+                    summary_files.extend(files["summary"])
+            except Exception as e:
+                st.error(f"Error finding summary files in S3: {str(e)}")
+        else:
+            dir_path = os.path.join(report_path, dir)
+            for file in os.listdir(dir_path):
+                if file.endswith("-summary.json"):
+                    summary_files.append(os.path.join(dir_path, file))
+
+    st.header("Optimization results")
+
+    # Sort summary files by name
+    summary_files = sorted(summary_files)
+
+    # Extract info for table
+    table_rows = []
+    all_equity_curves = []
+
+    for summary_file in summary_files:
+        try:
+            data = read_json_file(summary_file)
+            folder = os.path.basename(os.path.dirname(summary_file))
+            # Portfolio statistics (corrected path)
+            stats = data.get("totalPerformance", {}).get("portfolioStatistics", {})
+            end_equity = stats.get("endEquity", None)
+            total_net_profit = stats.get("totalNetProfit", None)
+            drawdown = stats.get("drawdown", None)
+            sharpe_ratio = stats.get("sharpeRatio", None)
+            # Parameters
+            params = data.get("algorithmConfiguration", {}).get("parameters", {})
+            filtered_params = {k: v for k, v in params.items() if v != ""}
+            # Add row
+            table_rows.append(
+                {
+                    "backtestId": folder,
+                    "endEquity": end_equity,
+                    "totalNetProfit": total_net_profit,
+                    "drawdown": drawdown,
+                    "sharpeRatio": sharpe_ratio,
+                    "parameters": json.dumps(filtered_params, indent=2),
+                }
+            )
+            # Equity curve for plotting
+            if data and "charts" in data and "Strategy Equity" in data["charts"]:
+                equity_data = data["charts"]["Strategy Equity"]["series"]["Equity"][
+                    "values"
+                ]
+                df = pd.DataFrame(
+                    np.array(equity_data),
+                    columns=pd.Index(["timestamp", "open", "high", "low", "close"]),
+                )
+                df["timestamp"] = pd.to_datetime(df["timestamp"], unit="s")
+                all_equity_curves.append(df)
+        except Exception as e:
+            st.error(f"Error reading file {summary_file}: {str(e)}")
+
+    # Plot equity curves (as before)
+    if all_equity_curves:
+        fig = go.Figure()
+        for df in all_equity_curves:
+            fig.add_trace(
+                go.Scatter(
+                    x=df["timestamp"],
+                    y=df["close"],
+                    mode="lines",
+                    line=dict(color="grey", width=1),
+                    opacity=0.1,
+                    showlegend=False,
+                    hoverinfo="skip",
+                )
+            )
+        all_timestamps = sorted(
+            set([ts for df in all_equity_curves for ts in df["timestamp"]])
+        )
+        mean_values = []
+        for ts in all_timestamps:
+            values = [
+                df[df["timestamp"] == ts]["close"].values[0]
+                for df in all_equity_curves
+                if ts in df["timestamp"].values
+            ]
+            if values:
+                mean_values.append(sum(values) / len(values))
+        fig.add_trace(
+            go.Scatter(
+                x=all_timestamps,
+                y=mean_values,
+                mode="lines",
+                line=dict(color="black", width=2),
+                name="Mean Equity",
+                hoverinfo="x+y+name",
+            )
+        )
+        fig.update_layout(
+            title="All Optimization Equity Curves",
+            xaxis_title="Date",
+            yaxis_title="Equity",
+            hovermode="x unified",
+        )
+        st.plotly_chart(fig, use_container_width=True)
+    else:
+        st.warning("No equity curves found in the summary files.")
+
+    # Show table
+    if table_rows:
+        df_table = pd.DataFrame(table_rows)
+        # Convert to percent and format
+        df_table["totalNetProfit"] = pd.to_numeric(
+            df_table["totalNetProfit"], errors="coerce"
+        )
+        df_table["drawdown"] = pd.to_numeric(df_table["drawdown"], errors="coerce")
+        df_table["totalNetProfit"] = df_table["totalNetProfit"].apply(
+            lambda x: f"{x*100:.2f}%" if pd.notnull(x) else ""
+        )
+        df_table["drawdown"] = df_table["drawdown"].apply(
+            lambda x: f"{x*100:.2f}%" if pd.notnull(x) else ""
+        )
+
+        st.dataframe(
+            df_table,
+            use_container_width=True,
+            hide_index=True,
+            column_order=[
+                "backtestId",
+                "endEquity",
+                "totalNetProfit",
+                "drawdown",
+                "sharpeRatio",
+                "parameters",
+            ],
+            column_config={
+                "parameters": st.column_config.TextColumn("parameters", width="large"),
+            },
+        )
+    else:
+        st.warning("No summary files found for table.")
